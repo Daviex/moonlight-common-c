@@ -254,6 +254,9 @@ static int addGen5Options(PSDP_OPTION* head) {
 }
 
 static PSDP_OPTION getAttributesList(char*urlSafeAddr) {
+    PYROWAVE_PROFILE_INFO pyrowaveProfile = {0};
+    if (NegotiatedVideoFormat == VIDEO_FORMAT_PYROWAVE &&
+        (!pyrowaveValidateConfig(&StreamConfig) || !pyrowaveParseProfile(&StreamConfig, &pyrowaveProfile))) return NULL;
     PSDP_OPTION optionHead;
     char payloadStr[92];
     int audioChannelCount;
@@ -304,7 +307,8 @@ static PSDP_OPTION getAttributesList(char*urlSafeAddr) {
         err |= addAttributeString(&optionHead, "x-ss-general.encryptionEnabled", payloadStr);
 
         // Enable YUV444 if requested
-        if (NegotiatedVideoFormat & VIDEO_FORMAT_MASK_YUV444) {
+        if ((NegotiatedVideoFormat & VIDEO_FORMAT_MASK_YUV444) ||
+            (NegotiatedVideoFormat == VIDEO_FORMAT_PYROWAVE && pyrowaveProfile.chroma444)) {
             err |= addAttributeString(&optionHead, "x-ss-video[0].chromaSamplingType", "1");
         }
         else {
@@ -325,6 +329,14 @@ static PSDP_OPTION getAttributesList(char*urlSafeAddr) {
         LC_ASSERT(StreamConfig.packetSize % 16 == 0);
         StreamConfig.packetSize -= sizeof(ENC_VIDEO_HEADER);
         LC_ASSERT(StreamConfig.packetSize % 16 == 0);
+    }
+    if (NegotiatedVideoFormat == VIDEO_FORMAT_PYROWAVE &&
+        !pyrowaveValidatePacketSize(StreamConfig.packetSize, StreamConfig.pyrowavePathMtu,
+                                  RemoteAddr.ss_family == AF_INET ? 20 : 40,
+                                  !!(EncryptionFeaturesEnabled & SS_ENC_VIDEO))) {
+        Limelog("PyroWave packet size exceeds the negotiated IP path MTU\n");
+        freeAttributeList(optionHead);
+        return NULL;
     }
     snprintf(payloadStr, sizeof(payloadStr), "%d", StreamConfig.packetSize);
     err |= addAttributeString(&optionHead, "x-nv-video[0].packetSize", payloadStr);
@@ -352,7 +364,9 @@ static PSDP_OPTION getAttributesList(char*urlSafeAddr) {
     // GFE currently imposes a limit of 100 Mbps for the video bitrate. It will automatically
     // impose that on maximumBitrateKbps but not on initialBitrateKbps. We will impose the cap
     // ourselves so initialBitrateKbps does not exceed maximumBitrateKbps.
-    adjustedBitrate = adjustedBitrate > 100000 ? 100000 : adjustedBitrate;
+    if (NegotiatedVideoFormat != VIDEO_FORMAT_PYROWAVE) {
+        adjustedBitrate = adjustedBitrate > 100000 ? 100000 : adjustedBitrate;
+    }
 
     // We don't support dynamic bitrate scaling properly (it tends to bounce between min and max and never
     // settle on the optimal bitrate if it's somewhere in the middle), so we'll just latch the bitrate
@@ -431,7 +445,18 @@ static PSDP_OPTION getAttributesList(char*urlSafeAddr) {
         snprintf(payloadStr, sizeof(payloadStr), "%d", slicesPerFrame);
         err |= addAttributeString(&optionHead, "x-nv-video[0].videoEncoderSlicesPerFrame", payloadStr);
 
-        if (NegotiatedVideoFormat & VIDEO_FORMAT_MASK_AV1) {
+        if (NegotiatedVideoFormat == VIDEO_FORMAT_PYROWAVE) {
+            err |= addAttributeString(&optionHead, "x-nv-vqos[0].bitStreamFormat", "3");
+            snprintf(payloadStr, sizeof(payloadStr), "%d", pyrowaveVersion(&StreamConfig));
+            err |= addAttributeString(&optionHead, "x-vp-pyrowave.version", payloadStr);
+            err |= addAttributeString(&optionHead, "x-vp-pyrowave.bitstreamRevision", PYROWAVE_BITSTREAM_REVISION);
+            err |= addAttributeString(&optionHead, "x-vp-pyrowave.profile", pyrowaveProfileName(&StreamConfig));
+            err |= addAttributeString(&optionHead, "x-vp-pyrowave.transport",
+                                      pyrowaveVersion(&StreamConfig) == 2 ? PYROWAVE_TRANSPORT_V2 : PYROWAVE_TRANSPORT_V1);
+            snprintf(payloadStr, sizeof(payloadStr), "%d", StreamConfig.pyrowavePathMtu ? StreamConfig.pyrowavePathMtu : 1280);
+            err |= addAttributeString(&optionHead, "x-vp-pyrowave.pathMtu", payloadStr);
+        }
+        else if (NegotiatedVideoFormat & VIDEO_FORMAT_MASK_AV1) {
             err |= addAttributeString(&optionHead, "x-nv-vqos[0].bitStreamFormat", "2");
         }
         else if (NegotiatedVideoFormat & VIDEO_FORMAT_MASK_H265) {
@@ -453,7 +478,8 @@ static PSDP_OPTION getAttributesList(char*urlSafeAddr) {
 
         if (AppVersionQuad[0] >= 7) {
             // Enable HDR if requested
-            if (NegotiatedVideoFormat & VIDEO_FORMAT_MASK_10BIT) {
+            if ((NegotiatedVideoFormat & VIDEO_FORMAT_MASK_10BIT) ||
+                (NegotiatedVideoFormat == VIDEO_FORMAT_PYROWAVE && pyrowaveProfile.transferPq)) {
                 err |= addAttributeString(&optionHead, "x-nv-video[0].dynamicRangeMode", "1");
             }
             else {

@@ -1,0 +1,19 @@
+{
+  "server_commit": "205c510c9a2aa3d9b37011c4cca0986ebbb65a6c",
+  "sha256": {
+    "720p-clear.pwrt": "bd3d25cf9a9bd208208c741f91f6c5678ccc84c0f58417927d1f7ff5af7d3610",
+    "720p-encrypted.pwrt": "60e6751b77e4a2522acae90968ef5b69e01fc2dd7bcfbfd2117dc7c4f9091c81",
+    "720p-fec0-clear.pwrt": "a5da4a974ecbfd8e0325ae95c129c7723269fe610d569355948df59c9d15ed0a",
+    "720p-fec0-encrypted.pwrt": "605891113b7b29ad4e1d57107d3b906c7db10edd45d5df22d268cc7da9c5bd69",
+    "720p-fec1-clear.pwrt": "06ec3d699cc53cecf059efa3ae0ac2a9f50bfc41c5f1e217173c78b75a0f55f6",
+    "720p-fec1-encrypted.pwrt": "7238d8100de001caf25b9ebb0b33cf08973c8c6d5752b7f28be3d5d127514563",
+    "720p-fec100-clear.pwrt": "bb521648370e7e24ad1338e5544a773781dfd1e90553dc7030946472c2c49091",
+    "720p-fec100-encrypted.pwrt": "18875c8a0b177512799ba6efa31dedc141e992f7adabc991265843cdab6b8784",
+    "720p-fec255-clear.pwrt": "78918e68d40c07aecaf7d102aba257a553ac703c2cc4811fc79ddd548290e147",
+    "720p-fec255-encrypted.pwrt": "ea1ebc80bbdf949e458ffcb84da3cdf2c82787577e85ec5aca350af3b0913c2b",
+    "720p.pwvf": "3279af5f4e22fbfd49082526b419416e316d97602e5269c6eed1bbbd8550d2c4",
+    "four-block-clear.pwrt": "2364121d72189c404bbf1ff9267d2537af83c955ff9cf416e258950866119ea5",
+    "four-block-encrypted.pwrt": "1b0cf6a9671e002dfa091347819ba8a8011731c44c94bd7de7df3befa207d00e",
+    "four-block.pwvf": "d61f5144cc5ebd43122e6f2d42d3abe3533f158f2713fd18ff9cf32608d5992c"
+  }
+}

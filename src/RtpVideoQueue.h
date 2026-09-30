@@ -44,6 +44,12 @@ typedef struct _RTP_VIDEO_QUEUE {
     uint8_t multiFecCurrentBlockNumber;
     uint8_t multiFecLastBlockNumber;
 
+    // PyroWave v1 frame identity and bounded reassembly deadline.
+    uint32_t pyrowaveFrameTimestamp;
+    uint32_t pyrowaveFirstBlockDataPackets;
+    uint64_t pyrowaveFrameStartUs;
+    struct _PYROWAVE_V2_FRAME* pyrowaveV2;
+
     uint64_t lastOosFramePresentationTimestamp;
     bool receivedOosData;
 
@@ -58,3 +64,4 @@ void RtpvCleanupQueue(PRTP_VIDEO_QUEUE queue);
 int RtpvAddPacket(PRTP_VIDEO_QUEUE queue, PRTP_PACKET packet, int length, PRTPV_QUEUE_ENTRY packetEntry);
 uint32_t RtpvGetCurrentFrameNumber(PRTP_VIDEO_QUEUE queue);
 void RtpvSubmitQueuedPackets(PRTP_VIDEO_QUEUE queue);
+void RtpvExpirePyrowaveFrame(PRTP_VIDEO_QUEUE queue);

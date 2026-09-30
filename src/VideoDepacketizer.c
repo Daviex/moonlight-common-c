@@ -24,6 +24,7 @@ static uint64_t firstPacketPresentationTime;
 static uint32_t firstPacketRtpTimestamp;
 static bool dropStatePending;
 static bool idrFrameProcessed;
+static uint32_t pyrowaveExpectedFrameBytes;
 
 #define DR_CLEANUP -1000
 
@@ -60,7 +61,7 @@ typedef struct _LENTRY_INTERNAL {
 
 // Init
 void initializeVideoDepacketizer(int pktSize) {
-    LbqInitializeLinkedBlockingQueue(&decodeUnitQueue, 15);
+    LbqInitializeLinkedBlockingQueue(&decodeUnitQueue, NegotiatedVideoFormat == VIDEO_FORMAT_PYROWAVE ? 3 : 15);
 
     nextFrameNumber = 1;
     startFrameNumber = 0;
@@ -77,6 +78,7 @@ void initializeVideoDepacketizer(int pktSize) {
     lastPacketPayloadLength = 0;
     dropStatePending = false;
     idrFrameProcessed = false;
+    pyrowaveExpectedFrameBytes = 0;
     strictIdrFrameWait = !isReferenceFrameInvalidationEnabled();
 }
 
@@ -214,8 +216,8 @@ void validateDecodeUnitForPlayback(PDECODE_UNIT decodeUnit) {
             LC_ASSERT_VT(decodeUnit->bufferList->next->next->bufferType == BUFFER_TYPE_PPS);
             LC_ASSERT_VT(decodeUnit->bufferList->next->next->next != NULL);
         }
-        else if (NegotiatedVideoFormat & VIDEO_FORMAT_MASK_AV1) {
-            // We don't parse the AV1 bitstream
+        else if (NegotiatedVideoFormat & (VIDEO_FORMAT_MASK_AV1 | VIDEO_FORMAT_PYROWAVE)) {
+            // Opaque codec payloads have no Annex-B configuration buffers.
             LC_ASSERT_VT(decodeUnit->bufferList->bufferType == BUFFER_TYPE_PICDATA);
         }
         else {
@@ -286,7 +288,9 @@ void LiCompleteVideoFrame(VIDEO_FRAME_HANDLE handle, int drStatus) {
     PQUEUED_DECODE_UNIT qdu = handle;
     PLENTRY_INTERNAL lastEntry;
 
-    if (drStatus == DR_NEED_IDR) {
+    // Every PyroWave frame is independent. A rejected partial/native frame must
+    // not flush a later complete frame already queued by the receive thread.
+    if (drStatus == DR_NEED_IDR && NegotiatedVideoFormat != VIDEO_FORMAT_PYROWAVE) {
         Limelog("Requesting IDR frame on behalf of DR\n");
         requestDecoderRefresh();
     }
@@ -494,8 +498,12 @@ static void reassembleFrame(int frameNumber, bool frameIsLTR) {
             // but the effects shouldn't very noticable since that's an infrequent operation.
             //
             // If we start sending this state in the frame header, we can make it 100% accurate.
-            qdu->decodeUnit.hdrActive = LiGetCurrentHostDisplayHdrMode();
-            qdu->decodeUnit.colorspace = (uint8_t)(qdu->decodeUnit.hdrActive ? COLORSPACE_REC_2020 : StreamConfig.colorSpace);
+            PYROWAVE_PROFILE_INFO profile;
+            bool isPyrowave = NegotiatedVideoFormat == VIDEO_FORMAT_PYROWAVE;
+            bool hasProfile = isPyrowave && pyrowaveParseProfile(&StreamConfig, &profile);
+            qdu->decodeUnit.hdrActive = isPyrowave ? hasProfile && profile.transferPq : LiGetCurrentHostDisplayHdrMode();
+            qdu->decodeUnit.colorspace = (uint8_t)(isPyrowave ? StreamConfig.colorSpace :
+                                                  (qdu->decodeUnit.hdrActive ? COLORSPACE_REC_2020 : StreamConfig.colorSpace));
 
             // Invoke the key frame callback if needed
             if (nalChainHead->bufferType != BUFFER_TYPE_PICDATA || qdu->decodeUnit.frameType == FRAME_TYPE_IDR) {
@@ -648,6 +656,34 @@ static void queueFragment(PLENTRY_INTERNAL* existingEntry, char* data, int offse
             nalChainTail = nalChainTail->next;
         }
     }
+}
+
+// PWPF v2 is independently framed in every fixed-size data slot. Preserve slot
+// boundaries in LENTRY so renderers can reassemble complete native packets from
+// partial frames without fabricating missing encoded bytes. This is also used
+// on deadline or when a newer frame supersedes an incomplete one.
+void queuePyrowaveFragmentFrame(uint32_t frame, const unsigned char* const* slots, unsigned count,
+                               unsigned slotSize, uint64_t receiveTimeUs, uint32_t rtpTimestamp) {
+    LC_ASSERT(NegotiatedVideoFormat == VIDEO_FORMAT_PYROWAVE && pyrowaveVersion(&StreamConfig) == 2);
+    LC_ASSERT(nalChainHead == NULL);
+    if (!count || count > 1020 || slotSize != (unsigned)StreamConfig.packetSize - 16 ||
+        (uint64_t)count * slotSize > pyrowaveFrameLimit(&StreamConfig)) return;
+    for (unsigned i = 0; i < count; i++) {
+        int previousLength = nalChainDataLength;
+        queueFragment(NULL, (char*)slots[i], 0, (int)slotSize);
+        if (nalChainDataLength != previousLength + (int)slotSize) {
+            cleanupFrameState();
+            return;
+        }
+    }
+    frameType = FRAME_TYPE_IDR;
+    frameHostProcessingLatency = 0; // v2 has no legacy short-frame latency field
+    firstPacketReceiveTimeUs = receiveTimeUs;
+    firstPacketRtpTimestamp = rtpTimestamp;
+    firstPacketPresentationTime = (uint64_t)rtpTimestamp * 1000 / 90;
+    nextFrameNumber = frame + 1;
+    waitingForIdrFrame = waitingForRefInvalFrame = waitingForNextSuccessfulFrame = false;
+    reassembleFrame((int)frame, false);
 }
 
 // Process an RTP Payload using the slow path that handles multiple NALUs per packet
@@ -848,13 +884,32 @@ static void processRtpPayload(PNV_VIDEO_PACKET videoPacket, int length,
 
     lastPacketInStream = streamPacketIndex;
 
+    if (NegotiatedVideoFormat == VIDEO_FORMAT_PYROWAVE && firstPacket) {
+        const unsigned char* p = (const unsigned char*)currentPos.data;
+        // Protocol v1 always uses the 8-byte short header and all-intra frames.
+        // Validate PWVF's fixed header while still borrowing the first shard.
+        if (currentPos.length < 40 || p[0] != 1 || p[3] != 2 ||
+            memcmp(p + 8, "PWVF", 4) != 0 || p[12] != PYROWAVE_PROTOCOL_VERSION || p[13] != 0 ||
+            p[14] != 32 || p[15] != 0 ||
+            pyrowaveReadLe32(p + 16) < 40 || (pyrowaveReadLe32(p + 16) & 3) ||
+            pyrowaveReadLe32(p + 16) > pyrowaveFrameLimit(&StreamConfig) ||
+            !pyrowaveReadLe32(p + 20) || pyrowaveReadLe32(p + 20) > 4096 ||
+            pyrowaveReadLe32(p + 24) != frameIndex) {
+            decodingFrame = false;
+            nextFrameNumber = frameIndex + 1;
+            dropFrameState();
+            return;
+        }
+        pyrowaveExpectedFrameBytes = pyrowaveReadLe32(p + 16);
+    }
+
     // If this is the first packet, skip the frame header (if one exists)
     uint32_t frameHeaderSize;
     LC_ASSERT_VT(currentPos.length > 0);
     if (firstPacket && currentPos.length > 0) {
         // Parse the frame type from the header
         LC_ASSERT_VT(currentPos.length >= 4);
-        if (APP_VERSION_AT_LEAST(7, 1, 350) && currentPos.length >= 4) {
+        if ((NegotiatedVideoFormat == VIDEO_FORMAT_PYROWAVE || APP_VERSION_AT_LEAST(7, 1, 350)) && currentPos.length >= 4) {
             switch (currentPos.data[currentPos.offset + 3]) {
             case 1: // Normal P-frame
                 break;
@@ -911,7 +966,10 @@ static void processRtpPayload(PNV_VIDEO_PACKET videoPacket, int length,
             BbGet16(&bb, &lastPacketPayloadLength);
         }
 
-        if (APP_VERSION_AT_LEAST(7, 1, 450)) {
+        if (NegotiatedVideoFormat == VIDEO_FORMAT_PYROWAVE) {
+            frameHeaderSize = 8;
+        }
+        else if (APP_VERSION_AT_LEAST(7, 1, 450)) {
             // >= 7.1.450 uses 2 different header lengths based on the first byte:
             // 0x01 indicates an 8 byte header
             // 0x81 indicates a 44 byte header
@@ -1065,6 +1123,15 @@ static void processRtpPayload(PNV_VIDEO_PACKET videoPacket, int length,
         }
 
         // Other codecs are just passed through as is.
+        if (NegotiatedVideoFormat == VIDEO_FORMAT_PYROWAVE &&
+            ((uint32_t)nalChainDataLength > pyrowaveExpectedFrameBytes ||
+             currentPos.length > pyrowaveExpectedFrameBytes - (uint32_t)nalChainDataLength ||
+             (lastPacket && (uint32_t)nalChainDataLength + currentPos.length != pyrowaveExpectedFrameBytes))) {
+            decodingFrame = false;
+            nextFrameNumber = frameIndex + 1;
+            dropFrameState();
+            return;
+        }
         queueFragment(existingEntry, currentPos.data, currentPos.offset, currentPos.length);
     }
 
@@ -1131,7 +1198,8 @@ static void processRtpPayload(PNV_VIDEO_PACKET videoPacket, int length,
 // that we lost a frame and submit an RFI request.
 void notifyFrameLost(unsigned int frameNumber, bool speculative) {
     // We may not invalidate frames that we've already received
-    LC_ASSERT(frameNumber >= startFrameNumber);
+    LC_ASSERT(NegotiatedVideoFormat == VIDEO_FORMAT_PYROWAVE ?
+              !isBefore32(frameNumber, startFrameNumber) : frameNumber >= startFrameNumber);
 
     // Drop state and determine if we need an IDR frame or if RFI is okay
     dropFrameState();

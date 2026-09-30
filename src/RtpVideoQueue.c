@@ -1,6 +1,7 @@
 #include "Limelight-internal.h"
 
 #include <rs.h>
+#include "PyrowaveRtpQueue.h"
 
 #if defined(LC_DEBUG) && !defined(LC_FUZZING)
 // This enables FEC validation mode with a synthetic drop
@@ -22,7 +23,7 @@ void RtpvInitializeQueue(PRTP_VIDEO_QUEUE queue) {
     memset(queue, 0, sizeof(*queue));
 
     queue->currentFrameNumber = 1;
-    queue->multiFecCapable = APP_VERSION_AT_LEAST(7, 1, 431);
+    queue->multiFecCapable = NegotiatedVideoFormat == VIDEO_FORMAT_PYROWAVE || APP_VERSION_AT_LEAST(7, 1, 431);
 }
 
 static void purgeListEntries(PRTPV_QUEUE_LIST list) {
@@ -37,6 +38,7 @@ static void purgeListEntries(PRTPV_QUEUE_LIST list) {
 }
 
 void RtpvCleanupQueue(PRTP_VIDEO_QUEUE queue) {
+    pyrowaveV2Cleanup(queue);
     purgeListEntries(&queue->pendingFecBlockList);
     purgeListEntries(&queue->completedFecBlockList);
 }
@@ -541,7 +543,45 @@ uint32_t RtpvGetCurrentFrameNumber(PRTP_VIDEO_QUEUE queue) {
     return queue->currentFrameNumber;
 }
 
+void RtpvExpirePyrowaveFrame(PRTP_VIDEO_QUEUE queue) {
+    if (NegotiatedVideoFormat == VIDEO_FORMAT_PYROWAVE && pyrowaveVersion(&StreamConfig) == 2) {
+        pyrowaveV2Expire(queue);
+        return;
+    }
+    if (NegotiatedVideoFormat != VIDEO_FORMAT_PYROWAVE || !queue->pyrowaveFrameStartUs ||
+        PltGetMicroseconds() - queue->pyrowaveFrameStartUs < 100000) {
+        return;
+    }
+    // An incomplete all-intra frame cannot hold packet buffers indefinitely.
+    purgeListEntries(&queue->pendingFecBlockList);
+    purgeListEntries(&queue->completedFecBlockList);
+    notifyFrameLost(queue->currentFrameNumber, false);
+    queue->currentFrameNumber++;
+    queue->multiFecCurrentBlockNumber = 0;
+    queue->pyrowaveFrameStartUs = 0;
+}
+
 int RtpvAddPacket(PRTP_VIDEO_QUEUE queue, PRTP_PACKET packet, int length, PRTPV_QUEUE_ENTRY packetEntry) {
+    if (NegotiatedVideoFormat == VIDEO_FORMAT_PYROWAVE &&
+        !pyrowaveValidateShard(packet, (size_t)length, StreamConfig.packetSize)) {
+        return RTPF_RET_REJECTED;
+    }
+    if (NegotiatedVideoFormat == VIDEO_FORMAT_PYROWAVE && pyrowaveVersion(&StreamConfig) == 2) {
+        return pyrowaveV2AddPacket(queue, packet, length);
+    }
+    if (NegotiatedVideoFormat == VIDEO_FORMAT_PYROWAVE) {
+        const unsigned char* raw = (const unsigned char*)packet;
+        uint32_t dataPackets = pyrowaveReadLe32(raw + 28) >> 22;
+        uint32_t blocks = (raw[27] >> 6) + 1;
+        // The exact planner balances block sizes (difference at most one).
+        // Even its smallest possible frame must fit the session byte ceiling.
+        uint32_t minimumDataPackets = (dataPackets - 1) * blocks + 1;
+        if ((uint64_t)(minimumDataPackets - 1) * (StreamConfig.packetSize - 16) >=
+            (uint64_t)pyrowaveFrameLimit(&StreamConfig) + 8) {
+            return RTPF_RET_REJECTED;
+        }
+    }
+    RtpvExpirePyrowaveFrame(queue);
     if (isBefore16(packet->sequenceNumber, queue->nextContiguousSequenceNumber)) {
         // Reject packets behind our current buffer window
         return RTPF_RET_REJECTED;
@@ -575,7 +615,9 @@ int RtpvAddPacket(PRTP_VIDEO_QUEUE queue, PRTP_PACKET packet, int length, PRTPV_
     }
 
 #ifndef LC_FUZZING
-    if (isBefore16(nvPacket->frameIndex, queue->currentFrameNumber)) {
+    if (NegotiatedVideoFormat == VIDEO_FORMAT_PYROWAVE ?
+        isBefore32(nvPacket->frameIndex, queue->currentFrameNumber) :
+        isBefore16(nvPacket->frameIndex, queue->currentFrameNumber)) {
         // Reject frames behind our current frame number
         return RTPF_RET_REJECTED;
     }
@@ -583,6 +625,24 @@ int RtpvAddPacket(PRTP_VIDEO_QUEUE queue, PRTP_PACKET packet, int length, PRTPV_
 
     uint32_t fecIndex = (nvPacket->fecInfo & 0x3FF000) >> 12;
     uint8_t fecCurrentBlockNumber = (nvPacket->multiFecBlocks >> 4) & 0x3;
+
+    if (NegotiatedVideoFormat == VIDEO_FORMAT_PYROWAVE &&
+        queue->pyrowaveFrameStartUs && nvPacket->frameIndex == queue->currentFrameNumber) {
+        uint32_t dataPackets = (nvPacket->fecInfo >> 22);
+        // Frame identity and block layout must agree before any FEC allocations.
+        if (packet->timestamp != queue->pyrowaveFrameTimestamp ||
+            (nvPacket->multiFecBlocks >> 6) != queue->multiFecLastBlockNumber ||
+            dataPackets > queue->pyrowaveFirstBlockDataPackets ||
+            queue->pyrowaveFirstBlockDataPackets - dataPackets > 1) {
+            return RTPF_RET_REJECTED;
+        }
+        if (fecCurrentBlockNumber == queue->multiFecCurrentBlockNumber && queue->pendingFecBlockList.count &&
+            (dataPackets != queue->bufferDataPackets ||
+             ((nvPacket->fecInfo >> 4) & 0xff) != queue->fecPercentage ||
+             U16(packet->sequenceNumber - fecIndex) != queue->bufferLowestSequenceNumber)) {
+            return RTPF_RET_REJECTED;
+        }
+    }
 
     if (nvPacket->frameIndex == queue->currentFrameNumber && fecCurrentBlockNumber < queue->multiFecCurrentBlockNumber) {
         // Reject FEC blocks behind our current block number
@@ -622,6 +682,7 @@ int RtpvAddPacket(PRTP_VIDEO_QUEUE queue, PRTP_PACKET packet, int length, PRTPV_
 
                     queue->currentFrameNumber++;
                     queue->multiFecCurrentBlockNumber = 0;
+                    queue->pyrowaveFrameStartUs = 0;
                     return RTPF_RET_REJECTED;
                 }
             }
@@ -659,6 +720,7 @@ int RtpvAddPacket(PRTP_VIDEO_QUEUE queue, PRTP_PACKET packet, int length, PRTPV_
             // We dropped a block of this frame, so we must skip to the next one.
             queue->currentFrameNumber = nvPacket->frameIndex + 1;
             queue->multiFecCurrentBlockNumber = 0;
+            queue->pyrowaveFrameStartUs = 0;
             return RTPF_RET_REJECTED;
         }
 
@@ -674,7 +736,9 @@ int RtpvAddPacket(PRTP_VIDEO_QUEUE queue, PRTP_PACKET packet, int length, PRTPV_
         // The check here looks weird, but that's because we increment the frame number
         // after successfully processing a frame.
         if (queue->currentFrameNumber != nvPacket->frameIndex) {
-            LC_ASSERT_VT(queue->currentFrameNumber < nvPacket->frameIndex);
+            LC_ASSERT_VT(NegotiatedVideoFormat == VIDEO_FORMAT_PYROWAVE ?
+                         isBefore32(queue->currentFrameNumber, nvPacket->frameIndex) :
+                         queue->currentFrameNumber < nvPacket->frameIndex);
 
             // If the frame immediately preceding this one was lost, we may have already
             // reported it using our speculative RFI logic. Don't report it again.
@@ -686,6 +750,12 @@ int RtpvAddPacket(PRTP_VIDEO_QUEUE queue, PRTP_PACKET packet, int length, PRTPV_
             }
         }
 
+        if (NegotiatedVideoFormat == VIDEO_FORMAT_PYROWAVE &&
+            (!queue->pyrowaveFrameStartUs || queue->currentFrameNumber != nvPacket->frameIndex)) {
+            queue->pyrowaveFrameStartUs = PltGetMicroseconds();
+            queue->pyrowaveFrameTimestamp = packet->timestamp;
+            queue->pyrowaveFirstBlockDataPackets = nvPacket->fecInfo >> 22;
+        }
         queue->currentFrameNumber = nvPacket->frameIndex;
 
         // Tell the control stream logic about this frame, even if we don't end up
@@ -797,6 +867,7 @@ int RtpvAddPacket(PRTP_VIDEO_QUEUE queue, PRTP_PACKET packet, int length, PRTPV_
                 // Continue to the next frame
                 queue->currentFrameNumber++;
                 queue->multiFecCurrentBlockNumber = 0;
+                queue->pyrowaveFrameStartUs = 0;
             }
         }
 

@@ -225,7 +225,7 @@ int LiStartConnection(PSERVER_INFORMATION serverInfo, PSTREAM_CONFIGURATION stre
         goto Cleanup;
     }
 
-    if (serverInfo->serverCodecModeSupport == 0) {
+    if (serverInfo->serverCodecModeSupport == 0 && streamConfig->supportedVideoFormats != VIDEO_FORMAT_PYROWAVE) {
         Limelog("serverCodecModeSupport field in SERVER_INFORMATION must be set!\n");
         LC_ASSERT(false);
         err = -1;
@@ -281,6 +281,13 @@ int LiStartConnection(PSERVER_INFORMATION serverInfo, PSTREAM_CONFIGURATION stre
 
     alreadyTerminated = false;
     ConnectionInterrupted = false;
+
+    if ((StreamConfig.supportedVideoFormats & VIDEO_FORMAT_PYROWAVE) &&
+        (!IS_SUNSHINE() || !pyrowaveValidateConfig(&StreamConfig))) {
+        Limelog("Invalid PyroWave version, profile, dimensions, rate or path MTU\n");
+        err = -1;
+        goto Cleanup;
+    }
     
     // Validate the audio configuration
     if (MAGIC_BYTE_FROM_AUDIO_CONFIG(StreamConfig.audioConfiguration) != 0xCA ||

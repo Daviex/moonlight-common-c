@@ -100,6 +100,19 @@ typedef struct _STREAM_CONFIGURATION {
     // in /launch and /resume requests.
     char remoteInputAesKey[16];
     char remoteInputAesIv[16];
+
+    // PyroWave IP path MTU, including IP/UDP/encryption headers (1280-1500).
+    // Zero selects the conservative 1280-byte default. Ignored for other codecs.
+    int pyrowavePathMtu;
+
+    // Zero or 1 selects legacy complete-frame PWVF; 2 selects PWPF fragments.
+    // Codec and profile changes require a new connection.
+    int pyrowaveProtocolVersion;
+
+    // Exact discovered profile name, NUL terminated; empty selects the legacy
+    // SDR profile. Extended profiles require protocol 2. Matrix and range must
+    // agree with colorSpace/colorRange; input p16 is not a bitstream-depth flag.
+    char pyrowaveProfile[64];
 } STREAM_CONFIGURATION, *PSTREAM_CONFIGURATION;
 
 // Use this function to zero the stream configuration when allocated on the stack or heap
@@ -232,6 +245,15 @@ typedef struct _DECODE_UNIT {
 #define VIDEO_FORMAT_AV1_MAIN10      0x2000 // AV1 Main 10-bit profile
 #define VIDEO_FORMAT_AV1_HIGH8_444   0x4000 // AV1 High 4:4:4 8-bit profile
 #define VIDEO_FORMAT_AV1_HIGH10_444  0x8000 // AV1 High 4:4:4 10-bit profile
+#define VIDEO_FORMAT_PYROWAVE      0x10000 // Private, explicitly negotiated PyroWave
+
+// PyroWave is discovered separately, never through ServerCodecModeSupport.
+#define PYROWAVE_PROTOCOL_VERSION 1
+#define PYROWAVE_PROTOCOL_VERSION_2 2
+#define PYROWAVE_TRANSPORT_V1 "complete-v1"
+#define PYROWAVE_TRANSPORT_V2 "fragments-v2"
+#define PYROWAVE_BITSTREAM_REVISION "d2997ac172bdc00e29c58e3f2938acb7e94580bf"
+#define PYROWAVE_PROFILE "sdr-bt709-full-left-420"
 
 // Masks for clients to use to match video codecs without profile-specific details.
 #define VIDEO_FORMAT_MASK_H264   0x000F

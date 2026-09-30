@@ -10,6 +10,7 @@
 #include "RtpAudioQueue.h"
 #include "RtpVideoQueue.h"
 #include "ByteBuffer.h"
+#include "Pyrowave.h"
 
 #include <enet/enet.h>
 
@@ -131,6 +132,8 @@ int performRtspHandshake(PSERVER_INFORMATION serverInfo);
 void initializeVideoDepacketizer(int pktSize);
 void destroyVideoDepacketizer(void);
 void queueRtpPacket(PRTPV_QUEUE_ENTRY queueEntry);
+void queuePyrowaveFragmentFrame(uint32_t frame, const unsigned char* const* slots, unsigned count,
+                               unsigned slotSize, uint64_t receiveTimeUs, uint32_t rtpTimestamp);
 void stopVideoDepacketizer(void);
 void requestDecoderRefresh(void);
 void notifyFrameLost(unsigned int frameNumber, bool speculative);

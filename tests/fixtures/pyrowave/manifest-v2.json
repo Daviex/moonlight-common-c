@@ -1,0 +1,23 @@
+{
+  "server_commit": "724d4c67858b0a3595a45bfbb1bbe47758ea2467",
+  "sha256": {
+    "v2-720p-fec0-clear.pwrt": "edeceea3c9d46f2699c0e42fbed4ae7b9df63d59cb646b5ad18bfb423117be79",
+    "v2-720p-fec0-encrypted.pwrt": "e8fec096774a6ef1ef5c0644be6236e0a3c8b49dc4b39a3722d9fdb9c0f2abec",
+    "v2-720p-fec0.pwpf": "7e865546eb84ca75f151d400d3ba4b89d972f12ad430f0bd72ea148ec82f8156",
+    "v2-720p-fec1-clear.pwrt": "71e6feb8fe63a19fd85b4116dd9a8ddb0b4e02b1fc7ab976d9ca0c10c0a9f3a9",
+    "v2-720p-fec1-encrypted.pwrt": "cb7e9384f34b49dfa7c8a74d003e000b3dc56088d035c97886c0eddaf3074ad6",
+    "v2-720p-fec1.pwpf": "7e865546eb84ca75f151d400d3ba4b89d972f12ad430f0bd72ea148ec82f8156",
+    "v2-720p-fec100-clear.pwrt": "e84e1b47fd360230eb7a3574c49d702b594d83af3318354f5be484a761831d75",
+    "v2-720p-fec100-encrypted.pwrt": "f28beae7970a47566811acaac2a19c835fc2aaad7a1d0642dfb3ef8e2e8a20c6",
+    "v2-720p-fec100.pwpf": "7e865546eb84ca75f151d400d3ba4b89d972f12ad430f0bd72ea148ec82f8156",
+    "v2-720p-fec20-clear.pwrt": "bf35b62e3976d3742a89786e0a4a64a04705222bf53f7b92b798a58fa369aafd",
+    "v2-720p-fec20-encrypted.pwrt": "2d2a708ca83de19c2564ee0e5b0cd4f9a2aa6bbc674bf884d1e07bfbb6b51914",
+    "v2-720p-fec20.pwpf": "7e865546eb84ca75f151d400d3ba4b89d972f12ad430f0bd72ea148ec82f8156",
+    "v2-720p-fec255-clear.pwrt": "42eb3e39f83767d334399efe09e9b9df0dcd53f283c2d1727d9467976cfab698",
+    "v2-720p-fec255-encrypted.pwrt": "d1bc3251f911ed580ab81db7d99735cc713dd2be780bc12290cfe4c601c9f4ae",
+    "v2-720p-fec255.pwpf": "7e865546eb84ca75f151d400d3ba4b89d972f12ad430f0bd72ea148ec82f8156",
+    "v2-four-block-clear.pwrt": "04838f7dd977887b4938aa9b70dcaa51e8febf3d36f84b83f926efc67adf1102",
+    "v2-four-block-encrypted.pwrt": "06c2fc823dda7b84509732556d217005d71ea613cfaf2e00ad51627509dd6cca",
+    "v2-four-block.pwpf": "3046e2af908086dbfee88185c7140f79e8176e62fa71844b5f94a7a75fe0b074"
+  }
+}

@@ -144,6 +144,7 @@ static void VideoReceiveThreadProc(void* context) {
             break;
         }
         else if  (err == 0) {
+            RtpvExpirePyrowaveFrame(&rtpQueue);
             if (!receivedDataFromPeer) {
                 // If we wait many seconds without ever receiving a video packet,
                 // assume something is broken and terminate the connection.
@@ -206,7 +207,10 @@ static void VideoReceiveThreadProc(void* context) {
             // couldn't already do. If they're not on-link, we just throw their malicious
             // traffic away (as mentioned in the paragraph above) and continue accepting
             // legitmate video traffic.
-            if (encHeader->frameNumber && LE32(encHeader->frameNumber) < RtpvGetCurrentFrameNumber(&rtpQueue)) {
+            if (encHeader->frameNumber &&
+                (NegotiatedVideoFormat == VIDEO_FORMAT_PYROWAVE ?
+                 isBefore32(LE32(encHeader->frameNumber), RtpvGetCurrentFrameNumber(&rtpQueue)) :
+                 LE32(encHeader->frameNumber) < RtpvGetCurrentFrameNumber(&rtpQueue))) {
                 continue;
             }
 
@@ -219,6 +223,16 @@ static void VideoReceiveThreadProc(void* context) {
                 Limelog("Failed to decrypt video packet!\n");
                 continue;
             }
+            if (NegotiatedVideoFormat == VIDEO_FORMAT_PYROWAVE &&
+                !pyrowaveAuthenticatedFrameMatches(buffer, (size_t)err, LE32(encHeader->frameNumber))) {
+                Limelog("PyroWave encrypted prefix frame index does not match authenticated video header\n");
+                continue;
+            }
+        }
+
+        if (NegotiatedVideoFormat == VIDEO_FORMAT_PYROWAVE &&
+            !pyrowaveValidateShard(buffer, (size_t)err, StreamConfig.packetSize)) {
+            continue;
         }
 
         // Convert fields to host byte-order
